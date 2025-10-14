@@ -11,46 +11,16 @@ import torch.nn as nn
 
 # 设置transformer不同尺寸的经验性设定模型参数
 MODEL_CONFIGS = {
-    'tiny': {
-        'num_layers': 2,
-        'd_model': 128,
-        'num_heads': 2,
-        'dff': 512,
-        'vocab_size': 30522,
-        'max_seq_len': 512,
-        'dropout': 0.1},
-    'small': {
-        'num_layers': 4,
-        'd_model': 256,
-        'num_heads': 4,
-        'dff': 1024,
-        'vocab_size': 30522,
-        'max_seq_len': 512,
-        'dropout': 0.1},
-    'medium': {
-        'num_layers': 6,
-        'd_model': 512,
-        'num_heads': 8,
-        'dff': 2048,
-        "vocab_size": 30522,
-        'max_seq_len': 512,
-        'dropout': 0.1},
-    'large': {
-        'num_layers': 12,
-        'd_model': 768,
-        'num_heads': 12,
-        'dff': 3072,
-        'vocab_size': 30522,
-        'max_seq_len': 512,
-        'dropout': 0.1},
-    'huge': {
-        'num_layers': 24,
-        'd_model': 1024,
-        'num_heads': 16,
-        'dff': 4096,
-        'vocab_size': 30522,
-        'max_seq_len': 512,
-        'dropout': 0.1},}
+    'tiny': {'num_layers': 2, 'd_model': 128, 'num_heads': 2, 'dff': 512, 
+             'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'small': {'num_layers': 4, 'd_model': 256, 'num_heads': 4, 'dff': 1024,
+        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'medium': {'num_layers': 6, 'd_model': 512, 'num_heads': 8, 'dff': 2048,
+        "vocab_size": 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'large': {'num_layers': 12, 'd_model': 768, 'num_heads': 12, 'dff': 3072,
+        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'huge': {'num_layers': 24, 'd_model': 1024, 'num_heads': 16, 'dff': 4096,
+        'vocab_size': 30522, 'max_seq_len': 512,'dropout': 0.1},}
 
 
 def dropout(x, p=0.1, training=True):
@@ -178,3 +148,185 @@ class FeedForward:
         return x
 
 
+class Embedding:
+    def __init__(self, vocab_size, d_model):
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, d_model))
+        torch.nn.init.normal_(self.weight, mean=0.0, std=1.0)
+    def __call__(self, input_ids):
+        # 查表操作: 直接使用索引查找对应的嵌入向量
+        # 当输入一个词的索引时，它会返回对应的向量
+        return self.weight[input_ids]
+    
+
+# 构造Transformer架构Encoder和Decoder两块组件
+class TransformerEncoderLayer:
+    def __init__(self, d_model, num_heads, dff, dropout=0.1):
+        # 编码器Encoder部分的单个层实现
+        self.norm1 = LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, num_heads, dropout=dropout)
+        self.norm2 = LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, dff, dropout=dropout)
+        self.dropout_p = dropout
+    def __call__(self, x, mask=None, training=True):
+        # 层归一化 -> 多头注意力 -> 残差连接
+        attn_input = self.norm1(x)
+        attn_out = self.attn(attn_input, attn_input, attn_input, mask=mask, training=training)
+        x = x + dropout(attn_out, p=self.dropout_p, training=training)
+        # 层归一化 -> 前向传播 -> 残差连接
+        ffn_input = self.norm2(x)
+        ffn_out = self.ffn(ffn_input,training=training)
+        x = x + dropout(ffn_out, p=self.dropout_p, training=training)
+        return x
+    
+
+class TransformerDecoderLayer:
+    def __init__(self, d_model, num_heads, dff, dropout=0.1):
+        # 解码器Decoder部分的单个层实现
+        self.norm1 = LayerNorm(d_model)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout=dropout)
+        self.norm2 = LayerNorm(d_model)
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout=dropout)
+        self.norm3 = LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, dff, dropout=dropout)
+        self.dropout_p = dropout
+    def __call__(self, x, enc_output, tgt_mask=None, src_mask=None, training=True):
+        # enc_output: [batch_size, src_seq_len, d_model], 编码器Encoder处理输入序列后产生的输出
+        # tgt_mask: [batch_size, 1, 1, src_seq_len]或[batch_size, src_seq_len], 处理源序列的掩码
+        # src_mask: [[batch_size, tgt_seq_len, tgt_seq_len], 用于处理目标序列的掩码
+        # 层归一化 -> 自注意力 -> 残差连接 Self-attention(causal)
+        self_attn_input = self.norm1(x)
+        self_attn_out = self.self_attn(self_attn_input, self_attn_input, self_attn_input, mask=tgt_mask, training=training)
+        x = x + dropout(self_attn_out, p=self.dropout_p, training=training)
+        # 层归一化 -> 多头注意力 -> 残差连接 Cross-attention
+        cross_attn_input = self.norm2(x)
+        cross_attn_out = self.cross_attn(cross_attn_input, enc_output, enc_output, mask=src_mask, training=training)
+        x = x + dropout(cross_attn_out, p=self.dropout_p, training=training)
+        # 层归一化 -> 前向传播 -> 残差连接 FFN
+        ffn_input = self.norm3(x)
+        ffn_out = self.ffn(ffn_input, training=training)
+        x = x + dropout(ffn_out, p=self.dropout_p, training=training)
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        # 注册嵌入层Embedding, 位置编码层PositionalEncoding
+        self.embedding = Embedding(config['vocab_size'], config['d_model'])
+        self.pos_encoding = PositionalEncoding(config['d_model'], config['max_seq_len'])
+        # 注册多个编码器层TransformerEncoderLayer
+        self.layers = []
+        for _ in range(config['num_layers']):
+            layer = TransformerEncoderLayer(
+                d_model = config['d_model'],
+                num_heads=config['num_heads'],
+                dff=config['dff'],
+                dropout=config['dropout'])
+            self.layers.append(layer)
+        self._register_parameters()
+    def _register_parameters(self):
+        # 递归收集对象中的所有Parameter参数
+        # 并将它们注册到当前模块params字典中
+        params = {}
+        def collect(obj, prefix=""):
+            if hasattr(obj, '__dict__'):
+                for k, v in obj.__dict__.items():
+                    # 三种情况遇到的参数类型分别是Parameter, list, dict
+                    name = f'{prefix}.{k}' if prefix else k
+                    if isinstance(v, torch.nn.Parameter):
+                        params[name] = v
+                    elif isinstance(v, list):
+                        for i, item in enumerate(v):
+                            collect(item, f"{name}.{i}")
+                    else:
+                        collect(v, name)
+        collect(self)
+        for name, param in params.items():
+            # register_parameter属于selfs属性, 区分_register_parameters()
+            self.register_parameter(name.replace('.', '_'), param)
+    def forward(self, input_ids, attention_mask=None, training=True):
+        # input_ids输入的词索引序列，形状为[batch_size, seq_len]
+        # attention_mask可选的注意力掩码，用于屏蔽某些位置
+        x = self.embedding(input_ids) * math.sqrt(self.config['d_model'])
+        x = self.pos_encoding(x)
+        for layer in self.layers:
+            x = layer(x, mask=attention_mask, training=training)
+        return x
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        # 注册嵌入层Embedding, 位置编码层PositionalEncoding
+        self.embedding = Embedding(config['vocab_size'], config['d_model'])
+        self.pos_encoding = PositionalEncoding(config['d_model'], config['max_seq_len'])
+        # 注册多个解码器层TransformerDecoderLayer
+        self.layers = []
+        for _ in range(config['num_layers']):
+            layer = TransformerDecoderLayer(
+                d_model = config['d_model'],
+                num_heads = config['num_heads'],
+                dff = config['dff'],
+                dropout = config['dropout'])
+            self.layers.append(layer)
+        self.final_norm = LayerNorm(config['d_model'])
+        self._register_parameters()
+    def _register_parameters(self):
+        # 递归收集对象中的所有Parameter参数
+        # 并将它们注册到当前模块params字典中
+        params = {}
+        def collect(obj, prefix=""):
+            if hasattr(obj, '__dict__'):
+                for k, v in obj.__dict__.items():
+                    # 三种情况遇到的参数类型分别是Parameter, list, dict
+                    name = f'{prefix}.{k}' if prefix else k
+                    if isinstance(v, torch.nn.Parameter):
+                        params[name] = v
+                    elif isinstance(v, list):
+                        for i, item in enumerate(v):
+                            collect(item, f'{name}.{i}')
+                    else:
+                        collect(v, name)
+        collect(self)
+        for name, param in params.items():
+            # register_parameter属于selfs属性, 区分_register_parameters()
+            self.register_parameter(name.replace('.', '_'), param)
+    def forward(self, tgt_ids, enc_output, tgt_mask=None, src_mask=None, training=True):
+        # tgt_ids目标的词索引序列，形状为[batch_size, seq_len]
+        # enc_output编码器的输出，形状为[batch_size, seq_len, d_model]
+        # tgt_mask可选的解码器注意力掩码，用于屏蔽某些位置
+        # src_mask可选的编码器注意力掩码，用于屏蔽某些位置
+        x = self.embedding(tgt_ids) * math.sqrt(self.config['d_mode'])
+        x = self.pos_embedding(x)
+        for layer in self.layers:
+            x = layer(x, enc_output, tgt_mask=tgt_mask, src_mask=src_mask, training=training)
+        x = self.final_norm(x)
+        return x
+
+
+# 完整Transformer架构
+class Transformer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.encoder = TransformerEncoder(config)
+        self.decoder = TransformerDecoder(config)
+        # 语言模型的输出层, 主要有两个作用: 将隐藏状态转换为下一个词的预测概率
+        # 是生成任务（如文本生成、机器翻译）的最后一环
+        self.lm_head = Linear(config['d_model'], config['vocab_size'], bias=False)
+        # weight tying权重共享
+        self.lm_head.weight = self.decoder.embedding.weight
+    def forward(self, src_ids, tgt_ids, src_mask=None, tgt_mask=None, training=True):
+        # src_ids源语言的词索引序列，形状为[batch_size, src_seq_len]
+        # tgt_ids目标语言的词索引序列，形状为[batch_size, tgt_seq_len]
+        # src_mask可选的源语言注意力掩码，用于屏蔽某些位置
+        # tgt_mask可选的目标语言注意力掩码，用于屏蔽某些位置
+        enc_output = self.encoder(src_ids, attention_mask=src_mask, training=training)
+        dec_output = self.decoder(tgt_ids, enc_output, tgt_mask=tgt_mask, src_mask=src_mask, training=training)
+        # 将解码器的输出通过线性层转换为下一个词的预测概率
+        logits = self.lm_head(dec_output)
+        return logits
+    
+
+# 
