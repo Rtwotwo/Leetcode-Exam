@@ -60,4 +60,50 @@ class PeepholeLSTM(nn.Module):
         self.W_hi = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_ci = nn.Parameter(torch.randn(hidden_size)) # 窥孔链接cell -> input gate
         
+        self.W_xf = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_hf = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.W_cf = nn.Parameter(torch.randn(hidden_size)) # 窥孔链接cell -> forget gate
+
+        self.W_xo = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_ho = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.W_co = nn.Parameter(torch.randn(hidden_size)) # 窥孔链接cell -> output gate
+        # 初始参数化输入, 遗忘, 记忆元与输出门的偏置参数bias
+        self.bias_i = nn.Parameter(torch.randn(hidden_size))
+        self.bias_f = nn.Parameter(torch.randn(hidden_size))
+        self.bias_c = nn.Parameter(torch.randn(hidden_size))
+        self.bias_o = nn.Parameter(torch.randn(hidden_size))
+    def forward(self, x, h_prev=None, c_prev=None):
+        # h_prev前一时间步的隐藏状态，默认为None
+        # c_prev前一时间步的细胞状态，默认为None
+        batch_size, seq_len, _ = x.shape
+        if h_prev is None:
+            h_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        if c_prev is None:
+            c_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        
+        outputs = []
+        h_t, c_t = h_prev, c_prev
+        for t in range(seq_len):
+            # x形状[batch_size, input_size]
+            x_t = x[:, t, :]
+            # 输入门, 遗忘门, 候选记忆元, 更新cell
+            i_t = torch.sigmoid(self.W_xi(x_t) + self.W_hi(h_t) + self.W_ci * c_t, self.bias_i)
+            f_t = torch.sigmoid(self.W_xf(x_t) + self.W_hf(h_t) + self.W_cf * c_t, self.bias_f)
+            c_hat = torch.tanh(self.W_xc(x_t) + self.W_hc(h_t) + self.bias_c)
+            c_t = f_t * c_t + i_t * c_hat
+            # 输出门, 更新隐藏状态
+            o_t = torch.sigmoid(self.W_xo(x_t) + self.W_ho(h_t) + self.W_co * c_t, self.bias_o)
+            h_t = o_t * torch.tanh(c_t)
+        # 输出output形状[Batch_size, seq_len, hidden_size]
+        output = torch.cat(outputs, dim=1)
+        return output, (h_t, c_t)
+
+        
+# 耦合输入-遗忘门 LSTM：f_t = 1 - i_t
+class CoupledLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+    
         
