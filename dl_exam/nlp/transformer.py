@@ -1,7 +1,7 @@
 """
 Author: Redal
-Date: 2025-10-11
-Todo: transformer.py
+Date: 2025-10-14
+Todo: transformer.py created for transformer model
 Homepape: https://github.com/Rtwotwo/Code-Exam.git
 """
 import math

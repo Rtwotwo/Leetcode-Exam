@@ -1,6 +1,6 @@
 """
 Author: Redal
-Date: 2025-10-11
+Date: 2025-10-14
 Todo: transformer_pytorch.py继承自torch.nn.Module, 去除_register_parameters()函数,
       PyTorch自动管理参数, 无需手动注册.
 Homepape: https://github.com/Rtwotwo/Code-Exam.git
