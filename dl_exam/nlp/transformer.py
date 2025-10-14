@@ -9,20 +9,6 @@ import torch
 import torch.nn as nn
 
 
-# 设置transformer不同尺寸的经验性设定模型参数
-MODEL_CONFIGS = {
-    'tiny': {'num_layers': 2, 'd_model': 128, 'num_heads': 2, 'dff': 512, 
-             'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
-    'small': {'num_layers': 4, 'd_model': 256, 'num_heads': 4, 'dff': 1024,
-        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
-    'medium': {'num_layers': 6, 'd_model': 512, 'num_heads': 8, 'dff': 2048,
-        "vocab_size": 30522, 'max_seq_len': 512, 'dropout': 0.1},
-    'large': {'num_layers': 12, 'd_model': 768, 'num_heads': 12, 'dff': 3072,
-        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
-    'huge': {'num_layers': 24, 'd_model': 1024, 'num_heads': 16, 'dff': 4096,
-        'vocab_size': 30522, 'max_seq_len': 512,'dropout': 0.1},}
-
-
 def dropout(x, p=0.1, training=True):
     if not training or p==0.0:
         return x
@@ -62,7 +48,7 @@ class Linear:
         bound = 1 / math.sqrt(in_features)
         self.weight = torch.nn.Parameter(torch.empty(out_features, in_features).uniform_(-bound, bound))
         if bias:
-            self.bias = torch.nn.Parameter(torch.empty(out_features, in_features).uniform_(-bound, bound))
+            self.bias = torch.nn.Parameter(torch.empty(out_features).uniform_(-bound, bound))
         else:
             self.bias = None
     def __call__(self, x):
@@ -298,8 +284,8 @@ class TransformerDecoder(nn.Module):
         # enc_output编码器的输出，形状为[batch_size, seq_len, d_model]
         # tgt_mask可选的解码器注意力掩码，用于屏蔽某些位置
         # src_mask可选的编码器注意力掩码，用于屏蔽某些位置
-        x = self.embedding(tgt_ids) * math.sqrt(self.config['d_mode'])
-        x = self.pos_embedding(x)
+        x = self.embedding(tgt_ids) * math.sqrt(self.config['d_model'])
+        x = self.pos_encoding(x)
         for layer in self.layers:
             x = layer(x, enc_output, tgt_mask=tgt_mask, src_mask=src_mask, training=training)
         x = self.final_norm(x)
@@ -329,4 +315,56 @@ class Transformer(nn.Module):
         return logits
     
 
-# 
+# 工具函数: 用于构造相关掩码
+def generate_causal_mask(seq_len, device=None):
+    # 生成因果掩码(Causal Mask)
+    mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device))
+    # 保证mask形状为[1, 1, seq_len, seq_len]
+    return mask.unsqueeze(0).unsqueeze(0)
+
+
+# 设置transformer不同尺寸的经验性设定模型参数
+MODEL_CONFIGS = {
+    'tiny': {'num_layers': 2, 'd_model': 128, 'num_heads': 2, 'dff': 512, 
+             'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'small': {'num_layers': 4, 'd_model': 256, 'num_heads': 4, 'dff': 1024,
+        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'medium': {'num_layers': 6, 'd_model': 512, 'num_heads': 8, 'dff': 2048,
+        "vocab_size": 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'large': {'num_layers': 12, 'd_model': 768, 'num_heads': 12, 'dff': 3072,
+        'vocab_size': 30522, 'max_seq_len': 512, 'dropout': 0.1},
+    'huge': {'num_layers': 24, 'd_model': 1024, 'num_heads': 16, 'dff': 4096,
+        'vocab_size': 30522, 'max_seq_len': 512,'dropout': 0.1},}
+
+
+# 创建构建函数, 辅助实例化Transformer类, 注意: 代码中使用了字典来存储不同尺寸的模型配置
+# build_transformer仅包含编码器Encoder-only, 适用于如 BERT,分类,序列标注等任务
+# build_transformer_full包含完整Transformer的Encoder+Decoder, 适用于如机器翻译, 文本生成等seq2seq任务
+def build_transformer(size: str)-> torch.nn.Module:
+    assert size in MODEL_CONFIGS, f'Size must be one of {list(MODEL_CONFIGS.keys())}'
+    config = MODEL_CONFIGS[size]
+    return TransformerEncoder(config)
+def build_transformer_full(size: str)-> torch.nn.Module:
+    assert size in MODEL_CONFIGS, f'Size must be one of {list(MODEL_CONFIGS.keys())}'
+    config = MODEL_CONFIGS[size]
+    return Transformer(config)
+
+
+if __name__ == '__main__':
+    print("=== 测试 Encoder-only ===")
+    model_enc = build_transformer('huge')
+    print(model_enc)
+    input_ids = torch.randint(0, 30522, (2, 64))
+    output = model_enc(input_ids, training=True)
+    print(f"Encoder 输出: {output.shape}")
+    print(f"Encoder 参数量: {sum(p.numel() for p in model_enc.parameters()) / 1e3:.1f}K")
+
+    print("\n=== 测试完整 Transformer (Encoder + Decoder) ===")
+    model_full = build_transformer_full('huge')
+    print(model_full)
+    src_ids = torch.randint(0, 30522, (2, 32))
+    tgt_ids = torch.randint(0, 30522, (2, 20))
+    causal_mask = generate_causal_mask(tgt_ids.shape[1], device=tgt_ids.device)
+    logits = model_full(src_ids, tgt_ids, tgt_mask=causal_mask, training=True)
+    print(f"Src: {src_ids.shape}, Tgt: {tgt_ids.shape}, Logits: {logits.shape}")
+    print(f"完整模型参数量: {sum(p.numel() for p in model_full.parameters()) / 1e3:.1f}K")
