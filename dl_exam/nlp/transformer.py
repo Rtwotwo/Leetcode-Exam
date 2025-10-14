@@ -2,7 +2,7 @@
 Author: Redal
 Date: 2025-10-14
 Todo: transformer.py created for transformer model
-Homepape: https://github.com/Rtwotwo/Code-Exam.git
+Homepage: https://github.com/Rtwotwo/Code-Exam.git
 """
 import math
 import torch
