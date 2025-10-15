@@ -50,6 +50,7 @@ class VanillaLSTM(nn.Module):
 
 
 # 带窥孔连接Peephole Connections的LSTM
+# f_t = \sigma(W_{xf} x_t + W_{hf} h_{t-1} + W_{cf} C_{t-1} + b_f)
 class PeepholeLSTM(nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
@@ -80,13 +81,17 @@ class PeepholeLSTM(nn.Module):
             h_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
         if c_prev is None:
             c_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
-        
+        # PeeholeLSTM网络的核心计算过程
+        # 创建outputs列表存储每个时间步的输出, h_t, c_t继承前时间步的状态
         outputs = []
         h_t, c_t = h_prev, c_prev
         for t in range(seq_len):
             # x形状[batch_size, input_size]
             x_t = x[:, t, :]
-            # 输入门, 遗忘门, 候选记忆元, 更新cell
+            # 输入门, 遗忘门, 候选记忆元, 更新cell -> 使用sigmoid函数将值压缩到0-1之间
+            # 计算输入门控信号-决定多少新信息进入细胞状态
+            # 计算遗忘门控信号-决定要保留多少之前的细胞状态
+            # 计算新的候选记忆内容-使用tanh函数将值压缩到-1到1之间
             i_t = torch.sigmoid(self.W_xi(x_t) + self.W_hi(h_t) + self.W_ci * c_t, self.bias_i)
             f_t = torch.sigmoid(self.W_xf(x_t) + self.W_hf(h_t) + self.W_cf * c_t, self.bias_f)
             c_hat = torch.tanh(self.W_xc(x_t) + self.W_hc(h_t) + self.bias_c)
@@ -99,11 +104,81 @@ class PeepholeLSTM(nn.Module):
         return output, (h_t, c_t)
 
         
-# 耦合输入-遗忘门 LSTM：f_t = 1 - i_t
+# 耦合输入-遗忘门, 即遗忘门和输入门耦合LSTM: f_t = 1-i_t
+# C_t = (1 - i_t) \odot C_{t-1} + i_t \odot \tilde{C}_t
 class CoupledLSTM(nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        # 从输入到各门的权重值, 遗忘门强制被耦合进输入门, 因此不单独设置权重和偏置参数
+        self.W_xi = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_hi = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.bias_i = nn.Parameter(torch.randn(hidden_size))
+
+        self.W_xc = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_hc = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.bias_c = nn.Parameter(torch.randn(hidden_size))
+
+        self.W_xo = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_ho = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.bias_o = nn.Parameter(torch.randn(hidden_size))
+    def forward(self, x, h_prev=None, c_prev=None):
+        # h_prev前一时间步的隐藏状态，默认为None
+        # c_prev前一时间步的细胞状态，默认为None
+        batch_size, seq_len, _ = x.shape
+        if h_prev is None:
+            h_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        if c_prev is None:
+            c_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        outputs = []
+        h_t, c_t = h_prev, c_prev
+        for t in range(seq_len):
+            # x: [batch_size, seq_len, input_size]
+            # 单独取出当前时间步的状态数据
+            x_t = x[:, t, :]
+            # 耦合门: i_t 控制写入的f_t = 1-i_t
+            i_t = torch.sigmoid(self.W_xi(x_t) + self.W_hi(h_t) + self.bias_i)
+            f_t = 1 - i_t
+            c_hat = torch.tanh(self.W_xc(x_t) + self.W_hc(h_t) + self.bias_c)
+            c_t = f_t * c_t + i_t * c_hat
+            # 输出门进行计算, 并且更行隐藏状态
+            o_t = torch.sigmoid(self.W_xo(x_t) + self.W_ho(h_t) + self.bias_o)
+            h_t = o_t * torch.tanh(c_t)
+            outputs.append(h_t.unsqueeze(1))
+        # 输出output形状[Batch_size, seq_len, hidden_size]
+        output = torch.cat(outputs, dim=1)
+        return output, (h_t, c_t)
     
+
+# GRU作为LSTM的轻量替代(非LSTM, 但常被归为同类)
+class GRU(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1,
+                dropout=0.0, bidirectional=False):
+        super().__init__()
+        # 使用torch.nn提供的GRU实例化
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=bidirectional)
+    def forward(self, x, h0=None):
+        batch_size = x.size(0)
+        num_directions = 2 if self.bidirectional else 1
+        if h0 is None:
+            h0 = torch.zeros(self.gru.num_layers * num_directions, batch_size, 
+                             self.gru.hidden_size, device=x.device)
+        output, hn = self.gru(x, h0)
+        return output, hn    
+    
+
+# 统一创建LSTM实例化函数, 根据输入参数选择LSTM实例
+# 根据variant返回对应LSTM模型,支持:'vanilla','peephole','coupled','gru'
+def build_lstm(variant='vanilla', **kwargs):
+    input_size = kwargs.get('input_size')
+    hidden_size = kwargs.get('hidden_size')
+    
+
+
         
