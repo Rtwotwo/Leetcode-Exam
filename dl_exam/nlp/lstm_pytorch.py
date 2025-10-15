@@ -38,7 +38,7 @@ class VanillaLSTM(nn.Module):
                             dropout=self.dropout,
                             bidirectional=self.bidirectional)
     def forward(self, x, h0=None, c0=None):
-        batch_size = x.size(0)
+        batch_size = x.size(1)
         if h0 is None:
             h0 = torch.zeros(self.num_layers * self.num_directions, batch_size, 
                              self.hidden_size, device=x.device)
@@ -65,6 +65,9 @@ class PeepholeLSTM(nn.Module):
         self.W_hf = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_cf = nn.Parameter(torch.randn(hidden_size)) # 窥孔链接cell -> forget gate
 
+        self.W_xc = nn.Linear(input_size, hidden_size, bias=False)
+        self.W_hc = nn.Linear(hidden_size, hidden_size, bias=False)
+
         self.W_xo = nn.Linear(input_size, hidden_size, bias=False)
         self.W_ho = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_co = nn.Parameter(torch.randn(hidden_size)) # 窥孔链接cell -> output gate
@@ -74,9 +77,10 @@ class PeepholeLSTM(nn.Module):
         self.bias_c = nn.Parameter(torch.randn(hidden_size))
         self.bias_o = nn.Parameter(torch.randn(hidden_size))
     def forward(self, x, h_prev=None, c_prev=None):
-        # h_prev前一时间步的隐藏状态，默认为None
-        # c_prev前一时间步的细胞状态，默认为None
-        batch_size, seq_len, _ = x.shape
+        # x is expected to be (seq_len, batch, input_size)
+        seq_len, batch_size, _ = x.shape
+        # Transpose to (batch, seq_len, input_size) for loop processing
+        x = x.transpose(0, 1)  # now (batch, seq_len, input_size)
         if h_prev is None:
             h_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
         if c_prev is None:
@@ -92,15 +96,17 @@ class PeepholeLSTM(nn.Module):
             # 计算输入门控信号-决定多少新信息进入细胞状态
             # 计算遗忘门控信号-决定要保留多少之前的细胞状态
             # 计算新的候选记忆内容-使用tanh函数将值压缩到-1到1之间
-            i_t = torch.sigmoid(self.W_xi(x_t) + self.W_hi(h_t) + self.W_ci * c_t, self.bias_i)
-            f_t = torch.sigmoid(self.W_xf(x_t) + self.W_hf(h_t) + self.W_cf * c_t, self.bias_f)
+            i_t = torch.sigmoid(self.W_xi(x_t) + self.W_hi(h_t) + self.W_ci * c_t + self.bias_i)
+            f_t = torch.sigmoid(self.W_xf(x_t) + self.W_hf(h_t) + self.W_cf * c_t + self.bias_f)
             c_hat = torch.tanh(self.W_xc(x_t) + self.W_hc(h_t) + self.bias_c)
             c_t = f_t * c_t + i_t * c_hat
             # 输出门, 更新隐藏状态
-            o_t = torch.sigmoid(self.W_xo(x_t) + self.W_ho(h_t) + self.W_co * c_t, self.bias_o)
+            o_t = torch.sigmoid(self.W_xo(x_t) + self.W_ho(h_t) + self.W_co * c_t + self.bias_o)
             h_t = o_t * torch.tanh(c_t)
+            outputs.append(h_t.unsqueeze(1))
         # 输出output形状[Batch_size, seq_len, hidden_size]
-        output = torch.cat(outputs, dim=1)
+        output = torch.cat(outputs, dim=1)  # (batch, seq_len, hidden)
+        output = output.transpose(0, 1)     # (seq_len, batch, hidden) to match PyTorch convention
         return output, (h_t, c_t)
 
         
@@ -124,9 +130,9 @@ class CoupledLSTM(nn.Module):
         self.W_ho = nn.Linear(hidden_size, hidden_size, bias=False)
         self.bias_o = nn.Parameter(torch.randn(hidden_size))
     def forward(self, x, h_prev=None, c_prev=None):
-        # h_prev前一时间步的隐藏状态，默认为None
-        # c_prev前一时间步的细胞状态，默认为None
-        batch_size, seq_len, _ = x.shape
+        # x is (seq_len, batch, input_size)
+        seq_len, batch_size, _ = x.shape
+        x = x.transpose(0, 1)  # (batch, seq_len, input_size)
         if h_prev is None:
             h_prev = torch.zeros(batch_size, self.hidden_size, device=x.device)
         if c_prev is None:
@@ -147,7 +153,8 @@ class CoupledLSTM(nn.Module):
             h_t = o_t * torch.tanh(c_t)
             outputs.append(h_t.unsqueeze(1))
         # 输出output形状[Batch_size, seq_len, hidden_size]
-        output = torch.cat(outputs, dim=1)
+        output = torch.cat(outputs, dim=1)  # (batch, seq_len, hidden)
+        output = output.transpose(0, 1)     # (seq_len, batch, hidden)
         return output, (h_t, c_t)
     
 
@@ -156,6 +163,11 @@ class GRU(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=1,
                 dropout=0.0, bidirectional=False):
         super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.bidirectional = bidirectional
         # 使用torch.nn提供的GRU实例化
         self.gru = nn.GRU(
             input_size=input_size,
@@ -164,7 +176,7 @@ class GRU(nn.Module):
             dropout=dropout,
             bidirectional=bidirectional)
     def forward(self, x, h0=None):
-        batch_size = x.size(0)
+        batch_size = x.size(1)  # ← FIXED: was x.size(0)
         num_directions = 2 if self.bidirectional else 1
         if h0 is None:
             h0 = torch.zeros(self.gru.num_layers * num_directions, batch_size, 
@@ -178,7 +190,35 @@ class GRU(nn.Module):
 def build_lstm(variant='vanilla', **kwargs):
     input_size = kwargs.get('input_size')
     hidden_size = kwargs.get('hidden_size')
-    
+    assert input_size is not None and hidden_size is not None, "must specify input_size and hidden_size"
+    if variant == 'vanilla':
+        return VanillaLSTM(input_size, hidden_size, **kwargs)
+    elif variant == 'peephole':
+        assert kwargs.get('num_layers', 1) == 1 and not kwargs.get('bidirectional', False), 'PeepholeLSTM only support single directinal layer'
+        return PeepholeLSTM(input_size, hidden_size)
+    elif variant == 'coupled':
+        assert kwargs.get('num_layers', 1)==1 and not kwargs.get('bidirectional', False), 'CoupledLSTM only support single directinal layer'
+        return CoupledLSTM(input_size, hidden_size)
+    elif variant == 'gru':
+        return GRU(**kwargs)
+    else: raise ValueError('Invalid variant: {}'.format(variant))
 
 
-        
+if __name__ == '__main__':
+    # 依次B-批次大小, T-序列长度或时间步数, D-输入特征的维度, H-LSTM隐藏层的大小
+    # 对应batch_size, seq_len, input_size, hidden_size参数
+    B, T, D, H = 2, 5, 10, 20
+    x = torch.randn(T, B, D)
+    # 实例化LSTM模型并测试代码
+    vanilla_lstm = build_lstm('vanilla', input_size=D, hidden_size=H, num_layers=2, bidirectional=True)
+    out, _ = vanilla_lstm(x)
+    print("Vanilla LSTM output shape:", out.shape)
+    peephole_lstm = build_lstm('peephole', input_size=D, hidden_size=H)
+    out, _ = peephole_lstm(x)
+    print("Peephole LSTM output shape:", out.shape)
+    coupled_lstm = build_lstm('coupled', input_size=D, hidden_size=H)
+    out, _ = coupled_lstm(x)
+    print("Coupled LSTM output shape:", out.shape)
+    gru_lstm = build_lstm('gru', input_size=D, hidden_size=H, num_layers=2)
+    out, _ = gru_lstm(x)
+    print("GRU output shape:", out.shape)
