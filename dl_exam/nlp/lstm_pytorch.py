@@ -192,7 +192,7 @@ def build_lstm(variant='vanilla', **kwargs):
     hidden_size = kwargs.get('hidden_size')
     assert input_size is not None and hidden_size is not None, "must specify input_size and hidden_size"
     if variant == 'vanilla':
-        return VanillaLSTM(input_size, hidden_size, **kwargs)
+        return VanillaLSTM(**kwargs)
     elif variant == 'peephole':
         assert kwargs.get('num_layers', 1) == 1 and not kwargs.get('bidirectional', False), 'PeepholeLSTM only support single directinal layer'
         return PeepholeLSTM(input_size, hidden_size)
@@ -212,13 +212,13 @@ if __name__ == '__main__':
     # 实例化LSTM模型并测试代码
     vanilla_lstm = build_lstm('vanilla', input_size=D, hidden_size=H, num_layers=2, bidirectional=True)
     out, _ = vanilla_lstm(x)
-    print("Vanilla LSTM output shape:", out.shape)
+    print(vanilla_lstm, f"Vanilla LSTM output shape: {out.shape}")
     peephole_lstm = build_lstm('peephole', input_size=D, hidden_size=H)
     out, _ = peephole_lstm(x)
-    print("Peephole LSTM output shape:", out.shape)
+    print(peephole_lstm, f"Peephole LSTM output shape: {out.shape}")
     coupled_lstm = build_lstm('coupled', input_size=D, hidden_size=H)
     out, _ = coupled_lstm(x)
-    print("Coupled LSTM output shape:", out.shape)
+    print(coupled_lstm, f"Coupled LSTM output shape: {out.shape}")
     gru_lstm = build_lstm('gru', input_size=D, hidden_size=H, num_layers=2)
     out, _ = gru_lstm(x)
-    print("GRU output shape:", out.shape)
+    print(gru_lstm, f"GRU output shape: {out.shape}")
