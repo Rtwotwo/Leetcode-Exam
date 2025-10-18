@@ -63,7 +63,6 @@ class ManualLSTM(nn.Module):
             for _ in range(self.num_directions):
                 self.layers.append(LSTMCell(layer_input_size, hidden_size, bias))
         self.dropout_layer = nn.Dropout(self.dropout) if self.dropout > 0 and num_layers > 1 else None
-
     def forward(self, x, hx=None):
         batch_size, seq_len, _ = x.shape
         device = x.device
@@ -116,7 +115,6 @@ class ManualLSTM(nn.Module):
             if self.dropout_layer is not None and layer != self.num_layers - 1:
                 output = self.dropout_layer(output)
             input_seq = output
-
         output = input_seq  # (B, T, H * num_directions)
         hn = torch.stack(final_h, dim=0)  # (num_layers * num_directions, B, H)
         cn = torch.stack(final_c, dim=0)  # (num_layers * num_directions, B, H)
