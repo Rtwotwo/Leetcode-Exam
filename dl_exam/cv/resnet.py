@@ -70,4 +70,50 @@ class Bottleneck(nn.Module):
                  downsample=None, groups=1, base_width=64,
                  dilation=1, norm_layer=None):
         super(Bottleneck, self).__init__()
+        # expansion定义了输出通道数相对于输入通道数的扩展比例
+        self.expansion = 4
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        width = int(planes * (base_width / 64.)) *groups
+        # 当步长不等于1时,self.conv2层和self.downsample层都会对输入进行下采样
+        self.conv1 = conv1x1(inplanes, width)
+        self.bn1 = norm_layer(width)
+        self.conv2 = conv3x3(width, width, stride, groups, dilation)
+        self.bn2 = norm_layer(width)
+        self.conv3 = conv1x1(width, planes * self.expansion)
+        self.bn3 = norm_layer(planes * self.expansion)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+    def forward(self, x):
+        identity = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        # 判断是否残差链接
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        out += identity
+        out = self.relu(out)
+        return out
+    
+
+# 定义完整的ResNet网络模型
+class ResNet(nn.Module):
+    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
+                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(ResNet, self).__nit__(self)
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation:
+            # 元组中的每个元素都表示是否应该用膨胀卷积替代 2x2 的步长卷积
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError(f"replace_stride_with_dilation should be None or " \
+            "a 3-element tuple, got {replace_stride_with_dilation}")
         
