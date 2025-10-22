@@ -7,7 +7,7 @@ Homepage: https://github.com/Rtwotwo/Code-Exam.git
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Union, Type
+from typing import Union, Type, List, Dict, Any
 
 # 预定义各类尺寸的ResNet版本, 包括18, 34, 50, 101, 152五种尺寸
 __all__ = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']
@@ -179,3 +179,16 @@ class ResNet(nn.Module):
         return x
 
 
+# 规定ResNet尺寸，便于加载目前主流的ResNet预训练模型
+def _resnet(arch:str, block:Union[Type[BasicBlock], Type[Bottleneck]], layers: List[int], 
+            pretrained:bool, progress:bool, **kwargs: Dict[str, Any]):
+    """工厂函数主要用于torch官网上下载预训练模型权重"""
+    model = ResNet(block, layers, **kwargs)
+    if pretrained:
+        from torchvision.models.resnet import model_urls
+        from torch.hub import load_state_dict_from_url
+        state_dict = load_state_dict_from_url(model_urls[arch], progress=progress)
+        model.load_state_dict(state_dict)
+    return model
+def resnet18(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
+    """"""
