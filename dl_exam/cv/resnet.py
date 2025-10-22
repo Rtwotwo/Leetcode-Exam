@@ -7,7 +7,7 @@ Homepage: https://github.com/Rtwotwo/Code-Exam.git
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Optional, Union, Type
 
 # 预定义各类尺寸的ResNet版本, 包括18, 34, 50, 101, 152五种尺寸
 __all__ = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']
@@ -100,9 +100,9 @@ class Bottleneck(nn.Module):
 
 # 定义完整的ResNet网络模型
 class ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
-                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
-                 norm_layer=None):
+    def __init__(self, block: Union[Type[BasicBlock], Type[Bottleneck]], layers, 
+                 num_classes=1000, zero_init_residual: bool=False,groups:int=1, width_per_group=64, 
+                 replace_stride_with_dilation=None, norm_layer=None):
         super(ResNet, self).__nit__(self)
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -110,10 +110,72 @@ class ResNet(nn.Module):
 
         self.inplanes = 64
         self.dilation = 1
-        if replace_stride_with_dilation:
+        if replace_stride_with_dilation is None:
             # 元组中的每个元素都表示是否应该用膨胀卷积替代 2x2 的步长卷积
             replace_stride_with_dilation = [False, False, False]
         if len(replace_stride_with_dilation) != 3:
             raise ValueError(f"replace_stride_with_dilation should be None or " \
             "a 3-element tuple, got {replace_stride_with_dilation}")
-        
+        self.groups = groups
+        self.base_width = width_per_group
+        # 定义初始卷积层和池化层, 已解决输入的3通道的图像
+        self.conv1 = nn.Conv2d(3, self.inplaces, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = norm_layer(self.inplaces)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # 定义ResNet的4个残差模块,每个模块包含多个残差块
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
+                                       dilate=replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
+                                       dilate=replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, 
+                                       dilate=replace_stride_with_dilation[2])
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.fc = nn.Linear(512*block.expansion, num_classes)
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+        """用于构建ResNet网络层的一系列残差块
+        block使用的块类型Bottleneck或BasicBlock
+        planes该层的基准通道数
+        blocks该层包含的块数量
+        stride第一个块的步长
+        dilate是否使用膨胀卷积"""
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        # 判断是否进行膨胀卷积->更新膨胀率
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        # 判断是否进行下采样->以匹配输入通道数量
+        if stride != 1 or self.inplanes != planes*self.expansion:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes * block.expansion, stride),
+                norm_layer(planes*block.expansion))
+        layers = []
+        layers.append(block(self.inplanes, planes, self.groups, 
+                            self.base_width, previous_dilation,
+                            norm_layer))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, groups=self.groups,
+                                bese_width=self.base_width, dilation=self.dilation,
+                                norm_layer=norm_layer))
+        return nn.Sequential(*layers)
+    def forward(self, x):
+        # 前向传播过程中注意使用的池化层的区别：
+        # 第一层conv1直接maxpool, 后续残差结束avgpool
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.maxpool(x)
+        # 添加ResNet18的残差连接
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.avgpool(x)
+        # 特征图降低维度输出
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
