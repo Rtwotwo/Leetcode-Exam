@@ -31,10 +31,12 @@ def conv1x1(in_planes, out_planes, stride=1):
 
 # 定义ResNet基本卷积块
 class BasicBlock(nn.Module):
+    expansion = 1
     def __init__(self, inplanes, planes, stride=1, 
                  downsample=None, groups=1, base_width=64, 
                  dilation=1, norm_layer=None):
         super(BasicBlock, self).__init__()
+        # 定义通道扩展系数expansion
         if norm_layer is None: norm_layer == nn.BatchNorm2d
         if groups != 1 or base_width != 64:
             raise ValueError('BasicBlock only supports groups=1 and base_width=64')
@@ -100,10 +102,10 @@ class Bottleneck(nn.Module):
 
 # 定义完整的ResNet网络模型
 class ResNet(nn.Module):
-    def __init__(self, block: Union[Type[BasicBlock], Type[Bottleneck]], layers, 
+    def __init__(self, block: Union[Type[BasicBlock], Type[Bottleneck]], layers: List[int], 
                  num_classes=1000, zero_init_residual: bool=False,groups:int=1, width_per_group=64, 
                  replace_stride_with_dilation=None, norm_layer=None):
-        super(ResNet, self).__nit__(self)
+        super(ResNet, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -119,8 +121,8 @@ class ResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
         # 定义初始卷积层和池化层, 已解决输入的3通道的图像
-        self.conv1 = nn.Conv2d(3, self.inplaces, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = norm_layer(self.inplaces)
+        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         # 定义ResNet的4个残差模块,每个模块包含多个残差块
@@ -148,7 +150,7 @@ class ResNet(nn.Module):
             self.dilation *= stride
             stride = 1
         # 判断是否进行下采样->以匹配输入通道数量
-        if stride != 1 or self.inplanes != planes*self.expansion:
+        if stride != 1 or self.inplanes != planes*block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
                 norm_layer(planes*block.expansion))
@@ -191,4 +193,9 @@ def _resnet(arch:str, block:Union[Type[BasicBlock], Type[Bottleneck]], layers: L
         model.load_state_dict(state_dict)
     return model
 def resnet18(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
-    """"""
+    """加载ResNet18模型网络架构"""
+    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, **kwargs)
+
+
+if __name__ == '__main__':
+    print(resnet18())
