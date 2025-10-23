@@ -31,12 +31,12 @@ def conv1x1(in_planes, out_planes, stride=1):
 
 # 定义ResNet基本卷积块
 class BasicBlock(nn.Module):
+    # 定义通道扩展系数expansion
     expansion = 1
     def __init__(self, inplanes, planes, stride=1, 
                  downsample=None, groups=1, base_width=64, 
                  dilation=1, norm_layer=None):
         super(BasicBlock, self).__init__()
-        # 定义通道扩展系数expansion
         if norm_layer is None: norm_layer == nn.BatchNorm2d
         if groups != 1 or base_width != 64:
             raise ValueError('BasicBlock only supports groups=1 and base_width=64')
@@ -68,12 +68,12 @@ class BasicBlock(nn.Module):
 
 # ResNet中的瓶颈(Bottleneck)模块的实现
 class Bottleneck(nn.Module):
+    # expansion定义了输出通道数相对于输入通道数的扩展比例
+    expansion = 4
     def __init__(self, inplanes, planes, stride=1,
                  downsample=None, groups=1, base_width=64,
                  dilation=1, norm_layer=None):
         super(Bottleneck, self).__init__()
-        # expansion定义了输出通道数相对于输入通道数的扩展比例
-        self.expansion = 4
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.)) *groups
@@ -155,13 +155,13 @@ class ResNet(nn.Module):
                 conv1x1(self.inplanes, planes * block.expansion, stride),
                 norm_layer(planes*block.expansion))
         layers = []
-        layers.append(block(self.inplanes, planes, self.groups, 
-                            self.base_width, previous_dilation,
-                            norm_layer))
+        layers.append(block(self.inplanes, planes, groups=self.groups,
+                    base_width=self.base_width, dilation=self.dilation,
+                    norm_layer=norm_layer))
         self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
             layers.append(block(self.inplanes, planes, groups=self.groups,
-                                bese_width=self.base_width, dilation=self.dilation,
+                                base_width=self.base_width, dilation=self.dilation,
                                 norm_layer=norm_layer))
         return nn.Sequential(*layers)
     def forward(self, x):
@@ -182,20 +182,55 @@ class ResNet(nn.Module):
 
 
 # 规定ResNet尺寸，便于加载目前主流的ResNet预训练模型
-def _resnet(arch:str, block:Union[Type[BasicBlock], Type[Bottleneck]], layers: List[int], 
-            pretrained:bool, progress:bool, **kwargs: Dict[str, Any]):
+def _resnet(arch: str, block: Union[Type[BasicBlock], Type[Bottleneck]], layers: List[int], 
+            pretrained: bool, progress: bool, **kwargs: Dict[str, Any]):
     """工厂函数主要用于torch官网上下载预训练模型权重"""
     model = ResNet(block, layers, **kwargs)
     if pretrained:
-        from torchvision.models.resnet import model_urls
+        # 手动定义model_urls, 避免ImportError兼容新版本torchvision
+        model_urls = {
+            'resnet18': 'https://download.pytorch.org/models/resnet18-f37072fd.pth',
+            'resnet34': 'https://download.pytorch.org/models/resnet34-b627a593.pth',
+            'resnet50': 'https://download.pytorch.org/models/resnet50-0676ba61.pth',
+            'resnet101': 'https://download.pytorch.org/models/resnet101-63fe2227.pth',
+            'resnet152': 'https://download.pytorch.org/models/resnet152-394f9c45.pth',}
         from torch.hub import load_state_dict_from_url
+        assert arch in model_urls, f"No checkpoint URL available for {arch}"
         state_dict = load_state_dict_from_url(model_urls[arch], progress=progress)
         model.load_state_dict(state_dict)
     return model
+"""ResNet-18模型源自《深度残差学习用于图像识别》https://arxiv.org/pdf/1512.03385.pdf
+pretrained: 如果为 True, 则返回在 ImageNet 上预训练的模型
+progress: 如果为 True, 则在标准错误输出上显示下载进度条"""
 def resnet18(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
     """加载ResNet18模型网络架构"""
     return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, **kwargs)
+def resnet34(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
+    """加载ResNet34模型网络架构"""
+    return _resnet("resnet34", BasicBlock, [3, 4, 6, 3], pretrained, progress, **kwargs)
+def resnet50(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
+    """加载ResNet50模型网络架构"""
+    return _resnet("resnet50", Bottleneck, [3, 4, 6, 3], pretrained, progress, **kwargs)
+def resnet101(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
+    """加载ResNet101模型网络架构"""
+    return _resnet("resnet101", Bottleneck, [3, 4, 23, 3], pretrained, progress, **kwargs)
+def resnet152(pretrained:bool=False, progress:bool=True, **kwargs:Dict[str, Any]):
+    """加载ResNet152模型网络架构"""
+    return _resnet("resnet152", Bottleneck, [3, 8, 36, 3], pretrained, progress, **kwargs)
 
 
 if __name__ == '__main__':
-    print(resnet18())
+    # 实例化ResNet18模型示例
+    resnet_custom_18 = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(resnet_custom_18)
+    resnet_custom_34 = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(resnet_custom_34)
+    resnet_custom_50 = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(resnet_custom_50)
+    resnet_custom_101 = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(resnet_custom_101)
+    resnet_custom_152 = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(resnet_custom_152)
+    # 加载预训练模型权重导入
+    resnet_18 = resnet18(pretrained=True)
+    print(resnet_18)
