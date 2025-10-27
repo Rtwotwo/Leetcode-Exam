@@ -4,9 +4,11 @@ Date: 2025-10-14
 Todo: vit.py for creating vision of transformer model
 Homepage: https://github.com/Rtwotwo/Code-Exam.git
 """
+import os
 import math
 import torch
 import torch.nn as nn
+from functools import partial
 from typing import Union, Type, List, Dict, Any
 from typing import Optional, Tuple, Callable, Set
 
@@ -83,6 +85,34 @@ class MLP(nn.Module):
         return x
 
 
+class PatchEmbed(nn.Module):
+    """将输入图像划分为多个非重叠的patch并线性嵌入到高维空间
+    img_size:输入图像的尺寸;
+    patch_size:patch的尺寸;
+    in_chans:输入图像的通道数;
+    embed_dim:嵌入维度;
+    norm_layer:归一化层;
+    flatten:是否将patch展平为一维向量"""
+    def __init__(self, img_size:int=224, 
+                 patch_size:int=16, 
+                 in_chans:int=3,
+                 embed_dim:int=768)->None:
+        super().__init__()
+        # 计算patch数量
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = (img_size // patch_size) ** 2
+        # 卷积层划分输入图像为patch
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+    def forward(self, x: torch.Tensor)->torch.Tensor:
+        # 检查输入图像的尺寸是否与预设尺寸匹配
+        B, C, H, W = x.shape
+        assert H==self.img_size and W==self.img_size, \
+            f'输入的图像尺寸{H}x{W}与预设尺寸{self.img_size}不匹配!!'
+        x = self.proj(x).flatten(2).transpose(1,2)
+        
+
+
 class Block(nn.Module):
     """采用预归一化的Transformer-Block块的实现
         dim:输入通道数; num_heads:注意力头数;
@@ -113,4 +143,4 @@ class Block(nn.Module):
                  device=None,
                  dtype=None)->None:
         super().__init__()
-        
+        """"""
