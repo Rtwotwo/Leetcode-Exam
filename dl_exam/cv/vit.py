@@ -14,7 +14,8 @@ from typing import Optional, Tuple, Callable, Set
 
 
 # 实现不同尺寸的Vision Transformer模型架构,保证模型可以被调用
-# 并且支持目前ImageNet数据集预训练的模型权重导入
+# 并且支持目前ImageNet数据集预训练的模型权重导入, 不是最基础的ViT模型架构!!
+# 注意: 该VIT包含DropPath, LayerScale, qk_norm, LayerNorm, 复杂的权重加载逻辑, 多种预训练配置等
 class DropPath(nn.Module):
     """随机丢弃路径的实现
     drop_prob(float): 丢弃概率"""
