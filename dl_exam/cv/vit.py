@@ -13,6 +13,24 @@ from typing import Union, Type, List, Dict, Any
 from typing import Optional, Tuple, Callable, Set
 
 
+class DropPath(nn.Module):
+    """随机丢弃路径的实现
+    drop_prob(float): 丢弃概率"""
+    def __init__(self, drop_prob:float=0.1,
+                 eps:float=1e-6,
+                 training:bool=True)->None:
+        self.drop_prob = drop_prob
+        self.eps = eps
+        self.training = training
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        if not self.training or self.drop_prob==0.0:
+            return x
+        # 使用随机mask完成随机路径的筛选
+        keep_prob = 1.0 -self.drop_prob
+        mask = (torch.rand_like(x) < keep_prob).float(x) / keep_prob
+        return x * mask
+
+
 class LayerNorm(nn.Module):
     """Layer Normalization基础的LayerNorm层实现
     normalized_shape (int或tuple): 需要归一化的维度形状
@@ -109,8 +127,51 @@ class PatchEmbed(nn.Module):
         B, C, H, W = x.shape
         assert H==self.img_size and W==self.img_size, \
             f'输入的图像尺寸{H}x{W}与预设尺寸{self.img_size}不匹配!!'
+        # x:[B, C, H, W]->[B, embed_dim, H//p, W//p]->[B, embed_dim, H//p*W//p]
+        # transpose(1,2)则是改变张量的维度顺序为[B, num_patches, embed_dim]
         x = self.proj(x).flatten(2).transpose(1,2)
-        
+        return x
+    
+
+class Attention(nn.Module):
+    """Transformer的注意力机制实现
+    dim:输入通道数; num_heads:注意力头数;
+    qkv_bias:如果为True, 给查询、键、值添加一个可学习的偏置;
+    qk_norm:如果为True, 对查询和键应用归一化;
+    proj_bias:如果为True,给输出投影添加偏置"""
+    def __init__(self, dim:int,
+                 num_heads:int,
+                 qkv_bias:bool=False,
+                 qk_norm:bool=False,
+                 attn_drop:float=0.,
+                 proj_drop:float=0.,
+                 norm_layer:Type[nn.Module]=LayerNorm)->None:
+        super().__init__()
+        # 计算每个注意力头的维度
+        assert dim%num_heads==0, f'输入通道数{dim}不能被注意力头数{num_heads}整除!!'
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        # 初始化查询、键、值映射层
+        self.qkv = nn.Linear(dim, dim*3, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        # 输入张量的维度为[B, N, C]即[B, num_patches, embed_dim]
+        B, N, C = x.shape
+        # [B, N, C]->[B, N, 3*C]->[B, N, 3, num_heads, head_dim]->[3, B, num_heads, N, head_dim]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0) # 张量按照第 0 维度(最外层维度)进行拆分
+        q, k = self.q_norm(q), self.k_norm(k)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = self.attn_drop(attn.softmax(dim=-1))
+        # 乘以值并求和输出得到注意力的实际得分
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj_drop(self.proj(x))
+        return x
 
 
 class Block(nn.Module):
@@ -127,7 +188,7 @@ class Block(nn.Module):
         norm_layer:归一化层;mlp_layer:MLP 层"""
     def __init__(self, dim:int, 
                  num_heads:int, 
-                 mip_ratio:float=4.0,
+                 mlp_ratio:float=4.0,
                  qkv_bias:bool=False, 
                  qk_norm:bool=False,
                  scale_attn_norm:bool=False,
@@ -143,4 +204,35 @@ class Block(nn.Module):
                  device=None,
                  dtype=None)->None:
         super().__init__()
-        """"""
+        # 设置Transformer-Block块,主要涵盖Encoder部分
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention(dim, num_heads, qkv_bias, qk_norm,
+                            attn_drop, proj_drop, norm_layer)
+        # LayerScale对神经网络层进行自适应缩放
+        self.ls1 = nn.Parameter(init_values*torch.ones(dim)) if init_values else None
+        self.drop_path1 = DropPath(drop_path) if drop_path>0. else nn.Indentity()
+        self.norm2 = norm_layer(dim)
+        self.mlp = MLP(dim, int(dim*mlp_ratio), act_layer=act_layer)
+        self.ls2 = nn.Parameter(init_values*torch.ones(dim)) if init_values else None
+        self.drop_path2 = DropPath(drop_path) if drop_path>0. else nn.Identity()
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        # 注意力机制层同时决定是否使用LayerScale
+        if self.ls1 is not None:
+            x = x + self.drop_path1(self.ls1 * self.attn(self.norm1(x)))
+        else: x = x + self.drop_path1(self.attn(self.norm1(x)))
+        # MLP作为VIT-Block块的前馈层并使用LayerScale
+        if self.ls2 is not None:
+            x = x +self.drop_path2(self.ls2*self.mlp(self.norm2(x)))
+        else: x = x + self.drop_path2(self.mlp(self.norm2(x)))
+        return x
+    
+
+class VisionTransformer(nn.Module):
+    """Vision Transformer的实现
+    img_size:输入图像尺寸; patch_size:patch尺寸; in_chans:输入通道数;
+    embed_dim:嵌入维度; depth:编码器块数; num_heads:注意力头数;
+    mlp_ratio:MLP  hidden_dim/embed_dim; qkv_bias:给查询、键、值添加一个可学习的偏置;
+    qk_norm:对查询和键应用归一化; proj_bias:给输出投影添加偏置; proj_drop:投影 dropout 率;
+    attn_drop:注意力 dropout 率; init_values:层缩放的初始值; drop_path:随机深度率;
+    act_layer:激活层; norm_layer:归一化层; mlp_layer:MLP 层; device:设备; dtype:数据类型"""
+    
