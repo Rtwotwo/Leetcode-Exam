@@ -89,14 +89,13 @@ class MLP(nn.Module):
         super().__init__() 
         # 当out_features和hidden_features为None或未被赋值时
         # 会自动使用in_features的值作为默认值
-        dd = {"device":device, "dtype":dtype}
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.norm1 = norm_layer(in_features, **dd)
+        self.norm1 = norm_layer(in_features)
         # 设置基础两层全连接MLP
-        self.fc1 = nn.Conv2d(in_features, hidden_features, **dd)
+        self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
-        self.fc2 = nn.Conv2d(hidden_features, out_features, **dd)
+        self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
     def forward(self, x:torch.Tensor)->torch.Tensor:
         x = self.norm1(x)
@@ -212,7 +211,7 @@ class Block(nn.Module):
                             attn_drop, proj_drop, norm_layer)
         # LayerScale对神经网络层进行自适应缩放
         self.ls1 = nn.Parameter(init_values*torch.ones(dim)) if init_values else None
-        self.drop_path1 = DropPath(drop_path) if drop_path>0. else nn.Indentity()
+        self.drop_path1 = DropPath(drop_path) if drop_path>0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         self.mlp = MLP(dim, int(dim*mlp_ratio), act_layer=act_layer)
         self.ls2 = nn.Parameter(init_values*torch.ones(dim)) if init_values else None
@@ -236,7 +235,7 @@ class VisionTransformer(nn.Module):
     mlp_ratio:MLP  hidden dim 与 embed_dim 的比率; qkv_bias:给查询、键、值添加一个可学习的偏置; 
     qk_norm:对查询和键应用归一化; init_values:层缩放的初始值; class_token:是否使用类标记; 
     no_embed_class:是否不使用嵌入类标记; drop_path_rate:随机drop丢弃"""
-    def __inti__(self, img_size:int=224,
+    def __init__(self, img_size:int=224,
                  patch_size:int=16,
                  in_chans:int=3,
                  num_classes:int=1000, 
@@ -267,14 +266,14 @@ class VisionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
         # 位置嵌入层设计
         embed_len = num_patches if no_embed_class else num_patches+(1 if class_token else 0)
-        self.pos_embed == nn.Parameter(torch.randn(1, embed_len, embed_dim) * 0.02)
+        self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * 0.02)
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
             block_fn(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio,
                      qkv_bias=qkv_bias, qk_norm=qk_norm, proj_drop=drop_rate,
-                     attn_drop_rate=attn_drop_rate, drop_path=dpr[i], 
+                     attn_drop=attn_drop_rate, drop_path=dpr[i], 
                      norm_layer=norm_layer, act_layer=act_layer, init_values=init_values)
                     for i in range(depth)])
         # 归一化并且设置分类头self.head(注意该head并非Attention中的注意力头)
@@ -405,10 +404,50 @@ def load_weights_from_npz(model, url_or_path, num_classes=1000):
     print(f'从预训练权重中加载{len(matched_state_dict)}层网络')
 
 
-def create_vit(model_name:str='vit_tiny_patch16_224', 
+def create_vit(model_name:str, 
                pretrained:bool=False, 
                num_classes:int=1000,
                img_size:int=224,
                in_chans:int=3,
                **kwargs:Dict[str, Any])->VisionTransformer:
+    if model_name not in VIT_CONFIGS:
+        raise ValueError(f'模型{model_name}不接受支持,请参照VIT_CONFIGS选择!!\n{list(VIT_CONFIGS.keys())}')
+    config = VIT_CONFIGS[model_name].copy()
+    # 尝试从CONFIGS取值, 若不存在则使用默认值
+    patch_size = config.pop('patch_size', 16)
+    url = config.pop('url', None)
+    model = VisionTransformer(
+        img_size=img_size,
+        patch_size=patch_size,
+        in_chans=in_chans,
+        num_classes=num_classes,
+        **config,
+        **kwargs)
+    if pretrained:
+        if url is None: raise ValueError(f'没有预训练权重支持该模型{model_name}')
+        load_weights_from_npz(model, url, num_classes=num_classes)
+    return model
     
+
+# 创建快速模型实例化函数
+# 主要包括vit的tiny, small, base, large, huge版本
+def vit_tiny(pretrained:str=False, **kwargs:Dict[str, Any]):
+    return create_vit('vit_tiny_patch16_224', pretrained=pretrained, **kwargs)
+def vit_small(pretrained:str=False, **kwargs:Dict[str, Any]):
+    return create_vit('vit_small_patch16_224', pretrained=pretrained, **kwargs)
+def vit_base(pretrained:str=False, **kwargs:Dict[str, Any]):
+    return create_vit('vit_base_patch16_224', pretrained=pretrained, **kwargs)
+def vit_large(pretrained:str=False, **kwargs:Dict[str, Any]):
+    return create_vit('vit_large_patch16_224', pretrained=pretrained, **kwargs)
+def vit_huge(pretrained:str=False, **kwargs:Dict[str, Any]):
+    return create_vit('vit_huge_patch16_224', pretrained=pretrained, **kwargs)
+
+
+if __name__ == '__main__':
+    # 创建自定义模型
+    vit_tiny = vit_tiny(pretrained=True)
+    # vit_small = vit_small()
+    # vit_base = vit_base()
+    # vit_large = vit_large()
+    # vit_huge = vit_huge()
+    print(vit_huge)
