@@ -62,7 +62,6 @@ classDiagram
 
     ResidualAttentionBlock *-- "2" LayerNorm : ln_1, ln_2
     ResidualAttentionBlock *-- "1" QuickGELU : in mlp
-
     CLIP *-- "1" ModifiedResNet : visual (ResNet)
     CLIP *-- "1" VisionTransformer : visual (ViT)
     CLIP *-- "1" Transformer : text transformer
