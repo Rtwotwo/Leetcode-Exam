@@ -160,11 +160,10 @@ class ModifiedResNet(nn.Module):
         return x
 
 
-class LayerNorm(nn.Module):
-    def __init__(self, normalized_shape:int, 
-                 eps: float=1e-5,
-                 )->None:
-        
+# class LayerNorm(nn.Module):
+#     def __init__(self, normalized_shape:int, 
+#                  eps: float=1e-5,
+#                  )->None:
 class LayerNorm(nn.LayerNorm):
     """子类化torch的LayerNorm以处理fp16
     确保模块内部计算使用特定精度float32,同时保持输入输出数据类型一致,
@@ -173,3 +172,14 @@ class LayerNorm(nn.LayerNorm):
         orig_type = x.dtype
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
+
+
+class QuickGELU(nn.Module):
+    """相比标准GELU计算更高效, 同时能保持类似的性能
+    torch.sigmoid(1.702*x)计算Sigmoid函数,其中1.702是经验常数"""
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        return x * torch.sigmoid(1.702 * x)
+    
+
+class ResidualAttentionBlock(nn.Module):
+    def __init__()
