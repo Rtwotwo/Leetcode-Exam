@@ -9,7 +9,7 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from collections import OrderedDict
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 
 
 class Bottleneck(nn.Module):
@@ -31,7 +31,7 @@ class Bottleneck(nn.Module):
         self.relu2 = nn.ReLU(inplace=True)
         self.avgpool = nn.AvgPool2d(stride) if stride>1 else nn.Identity()
 
-        self.conv3 = nn.Conv2d(inplanes, planes * self.axpa, 1, bias=False)
+        self.conv3 = nn.Conv2d(inplanes, planes * self.expansion, 1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
         self.relu3 = nn.ReLU(inplace=True) # 用于残差连接再激活
         # 初始化downsample和stride参数配置
@@ -108,7 +108,7 @@ class ModifiedResNet(nn.Module):
     执行抗锯齿跨步卷积,其中在跨步大于1的卷积前添加一个平均池化,
     最终的池化层是QKV注意力机制AttentionPool2d,而非平均池化"""
     def __init__(self,
-                 layers,
+                 layers: List[int],
                  output_dim:int,
                  heads:int,
                  input_resolution:int=224,
@@ -128,6 +128,48 @@ class ModifiedResNet(nn.Module):
         self.avgpool = nn.AvgPool2d(kernel_size=2)
 
         # 残差模块层
-        self._inplanes = width
-        
+        self._inplanes = width # 在构建过程中使用的可变变量
+        self.layer1 = self._make_layer(width, layers[0])
+        self.layer2 = self._make_layer(width * 2, layers[1], stride=2)
+        self.layer3 = self._make_layer(width * 4, layers[2], stride=2)
+        self.layer4 = self._make_layer(width * 8, layers[3], stride=2)
 
+        embed_dim = width * 32 # ResNet特征维度
+        self.attnpool = AttentionPool2d(input_resolution // 32, embed_dim, heads, output_dim)
+    def _make_layer(self, planes:int, blocks:int, stride:int=1):
+        layers = [Bottleneck(self.inplanes, planes, stride)]
+        self._inplanes = planes * Bottleneck.expansion
+        for _ in range(1, blocks):
+            layers.append(Bottleneck(self._inplanes, planes))
+        return nn.Sequential(*layers)
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        def stem(x:torch.Tensor)->torch.Tensor:
+            # 首先完成3层主干卷积
+            x = self.relu1(self.bn1(self.conv1(x)))
+            x = self.relu2(self.bn2(self.conv2(x)))
+            x = self.relu3(self.bn3(self.conv3(x)))
+            x = self.avgpool(x)
+            return x
+        x = x.type(self.conv1.weight.dtype)
+        x = stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.attnpool(x)
+        return x
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, normalized_shape:int, 
+                 eps: float=1e-5,
+                 )->None:
+        
+class LayerNorm(nn.LayerNorm):
+    """子类化torch的LayerNorm以处理fp16
+    确保模块内部计算使用特定精度float32,同时保持输入输出数据类型一致,
+    避免类型不匹配导致的错误,常见于需要控制数值精度的场景"""
+    def forward(self, x:torch.Tensor):
+        orig_type = x.dtype
+        ret = super().forward(x.type(torch.float32))
+        return ret.type(orig_type)
