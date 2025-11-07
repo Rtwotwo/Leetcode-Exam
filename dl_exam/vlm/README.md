@@ -11,8 +11,7 @@ classDiagram
 
     class AttentionPool2d {
         +__init__(spacial_dim, embed_dim, num_heads, output_dim)
-        +forward(x)
-    }
+        +forward(x)}
 
     class ModifiedResNet {
         +__init__(layers, output_dim, heads, input_resolution, width)

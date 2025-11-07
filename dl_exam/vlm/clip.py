@@ -208,6 +208,8 @@ class ResidualAttentionBlock(nn.Module):
     
 
 class Transformer(nn.Module):
+    """仅设置Vision Transformer架构中的Encoder模块累积层数
+    后续文本和图像的token通过Encoder模块进行编码, 输出为CLS token"""
     def __init__(self, 
                  width: int,
                  layers: int, 
@@ -215,6 +217,28 @@ class Transformer(nn.Module):
                  attn_mask: torch.Tensor=None
                  )->None:
         super().__init__()
+        self.width = width
+        self.layers = layers
+        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        self.resblocks(x)
+        return x
+
+
+class VisionTransformer(nn.Module):
+    def __init__(self, 
+                 input_resolution:int,
+                 patch_size:int,
+                 width:int,
+                 layers:int,
+                 heads:int,
+                 output_dim:int
+                 )->None:
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.output_dim = self.output_dim
+        # 使用stride=patch_size进行分块编码
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, 
+                    kernel_size=patch_size, stride=patch_size,bias=False)
+        scale = width ** -0.5
         
-
-
