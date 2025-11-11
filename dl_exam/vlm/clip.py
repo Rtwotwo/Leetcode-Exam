@@ -57,7 +57,7 @@ class Bottleneck(nn.Module):
     
 
 class AttentionPool2d(nn.Module):
-    """基于注意力机制的2D特征池化操作:
+    """基于注意力机制的2D特征池化操作-直接分割后的patch:
     通过自注意力机制,让类别token学习对所有空间位置特征的加权聚合,
     从而实现具有注意力机制的池化操作，比传统的平均/最大池化更具判别性
     spacial_dim: 输入特征图的空间维度,可能是H/W"""
@@ -69,6 +69,7 @@ class AttentionPool2d(nn.Module):
                  )->None:
         super().__init__()
         # spacial_dim²表示空间位置数量, +1通常用于添加一个特殊的类别token, embed_dim表示嵌入维度并作出归一化
+        # 注意special_dim**2针对裁剪的patch块做的处理,转为[patch_size*patch_size+cls_token, embed_dim]的形状
         self.positional_embedding = nn.Parameter(torch.randn(spacial_dim ** 2 + 1, embed_dim) / embed_dim ** 0.5)
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.q_proj = nn.Linear(embed_dim, embed_dim)
@@ -78,9 +79,10 @@ class AttentionPool2d(nn.Module):
     def forward(self, x:torch.Tensor)->torch.Tensor:
         x = x.flatten(start_dim=2).permute(2, 0, 1) # Adjust NCHW to (HW)NC
         x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0) # Add class token (HW+1)NC
+        # [:, None, :]通过None增加一个维度,调整位置嵌入的形状,使其能与x的维度匹配
         x = x + self.positional_embedding[:, None, :].to(x.dtype) # Maintain shape (HW+1)NC
         # 直接调用torch提供的MHA的Forward函数
-        # x[:1]是为了实现类别token对所有空间特征的注意力聚合操作
+        # x[:1]是为了实现类别cls_token对所有空间特征的注意力聚合操作
         x, _ = F.multi_head_attention_forward(
             query=x[:1], key=x, value=x,
             embed_dim_to_check=x.shape[-1],
@@ -95,7 +97,7 @@ class AttentionPool2d(nn.Module):
             add_zero_attn=False,
             dropout_p=0,
             out_proj_weight=self.c_proj.weight,
-            out_proj_weight=self.c_proj.bias,
+            out_proj_bias=self.c_proj.bias,
             use_separate_proj_weight=True,
             training=self.training,
             need_weights=False)
@@ -134,9 +136,11 @@ class ModifiedResNet(nn.Module):
         self.layer3 = self._make_layer(width * 4, layers[2], stride=2)
         self.layer4 = self._make_layer(width * 8, layers[3], stride=2)
 
-        embed_dim = width * 32 # ResNet特征维度
+        embed_dim = width * 32 # ResNet特征维度->layer4输出的512//32=16为patch_size
         self.attnpool = AttentionPool2d(input_resolution // 32, embed_dim, heads, output_dim)
     def _make_layer(self, planes:int, blocks:int, stride:int=1):
+        """注册每层的ResNet的BottleNeck的层数由blocks参数决定
+            因此layer1-4使用的BottleNeck的层数不会相同"""
         layers = [Bottleneck(self.inplanes, planes, stride)]
         self._inplanes = planes * Bottleneck.expansion
         for _ in range(1, blocks):
@@ -160,10 +164,6 @@ class ModifiedResNet(nn.Module):
         return x
 
 
-# class LayerNorm(nn.Module):
-#     def __init__(self, normalized_shape:int, 
-#                  eps: float=1e-5,
-#                  )->None:
 class LayerNorm(nn.LayerNorm):
     """子类化torch的LayerNorm以处理fp16
     确保模块内部计算使用特定精度float32,同时保持输入输出数据类型一致,
@@ -205,11 +205,11 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.attention(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
-    
+
 
 class Transformer(nn.Module):
     """仅设置Vision Transformer架构中的Encoder模块累积层数
-    后续文本和图像的token通过Encoder模块进行编码, 输出为CLS token"""
+    后续文本和图像的token通过Encoder模块进行编码, 输出为CLS_token"""
     def __init__(self, 
                  width: int,
                  layers: int, 
@@ -284,6 +284,8 @@ class CLIP(nn.Module):
                 )->None:
         super().__init__()
         self.context_length = context_length
+        # 这里通过vision_layers的类型来选择使用ModifiedResNet
+        # 还是VisionTranformer作为CLIP的编码器部分
         if isinstance(vision_layers, (tuple, list)):
             vision_heads = vision_width * 32 // 64
             self.visual = ModifiedResNet(
@@ -338,6 +340,112 @@ class CLIP(nn.Module):
             nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
-            
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+    def build_attention_mask(self):
+        # 使用因果掩码机制-惰性创建因果注意力掩码, 视觉标记之间采用完全注意力机制
+        # PyTorch使用加性注意力掩码; 用-inf无穷大填充
+        # 最终得到的掩码矩阵中，对于位置 i 的元素，只能看到 i 及之前位置的元素（对应掩码为 0 的区域），无法看到 i 之后的元素（对应掩码为 - inf 的区域），实现了 "因果注意力" 机制。
+        mask = torch.empty(self.context_length, self.context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1) # 将下三角部分置零
+        return mask
+    @property
+    def dtype(self):
+        # 获取视觉visual部分的conv1的weight数据类型float32/64
+        return self.visual.conv1.weight.dtype
+    def encode_image(self, image):
+        # 将输入图像的数据类型转换为与模型权重相同的类型
+        # 编码图像前确保输入数据类型与模型权重一致, 避免类型不匹配错误
+        return self.visual(image.type(self.dtype))
+    def encode_text(self, text):
+        # [batch_size, n_ctx, d_model]即NLD
+        x = self.token_embedding(text).type(self.dtype)
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2) # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2) # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+
+        # x形状为[batch_size, n_ctx, transformer.width]
+        # 从eot嵌入中提取特征(eot_token是每个序列中最大的数字)
+        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        return x
+    def forward(self, image, text):
+        image_features = self.encode_image(image)
+        text_features = self.encode_text(text)
+        # 特征归一化: 用特征向量除以自身按行的L2范数, 将所有特征向量标准化到单位球面上
+        image_features = image_features / image_features.norm(dim=1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=1, keepdim=True)
+        # 将余弦相似性作为概率输出
+        logit_scale = self.logit_scale.exp()
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_text = logits_per_image.t()
+        # 此时image和text的形状是[gobal_batch_size, gloabl_batch_size]
+        return logits_per_image, logits_per_text
+
+
+def convert_weights(model:nn.Module):
+    """将模型的参数转为fp16精度"""
+    def _convert_weights_to_fp16(l):
+        if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+            l.weight.data = l.weight.data.half()
+            if l.bias is not None:
+                l.bias.data = l.bias.data.half()
+        if isinstance(l, nn.MultiheadAttention):
+            for attr in [*[f'{s}_proj_weight' for s in ['in', 'q', 'k', 'v']], 'in_proj_bias', 'bias_k', 'bias_v']:
+                tensor = getattr(l, attr)
+                if tensor is not None:
+                    tensor.data = tensor.data.half()
+        for name in ["text_projection", 'proj']:
+            if hasattr(l, name):
+                attr = getattr(l, name)
+                if attr is not None:
+                    attr.data = attr.data.half()
+    model.apply(_convert_weights_to_fp16)
+
+
+def build_model(state_dict:dict):
+    vit = "visual.proj" in state_dict
+    if vit:
+        vision_width = state_dict["visual.conv1.weight"].shape[0]
+        vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
+        vision_patch_size = state_dict['visual.conv1.weight'].shape[-1]
+        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
+        image_resolution = vision_patch_size * grid_size
+    else:
+        counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f'visual.layer{b}'))) for b in [1, 2, 3, 4]]
+        vision_layers = tuple(counts)
+        vision_width =  state_dict["visual.layer1.0.conv1.weight"].shape[0]
+        output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
+        vision_patch_size = None
+        assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
+        image_resolution = output_width * 32
+
+    embed_dim = state_dict["text_projection"].shape[1]
+    context_length = state_dict["positional_embedding"].shape[0]
+    vocab_size = state_dict["token_embedding.weight"].shape[0]
+    transformer_width = state_dict["ln_final.weight"].shape[0]
+    transformer_heads = transformer_width // 64 
+    transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswidth("transformer.resblocks")))
+
+    model = CLIP(
+        embed_dim,
+        # 视觉部分visual
+        image_resolution,
+        vision_layers,
+        vision_width,
+        vision_patch_size,
+        # 文本变量context
+        context_length,
+        vocab_size,
+        transformer_width,
+        transformer_heads,
+        transformer_layers)
+    for key in ["input_resolution", "context_length"]:
+        if key in state_dict:
+            del state_dict[key]
+    convert_weights(model)
+    model.load_state_dict(state_dict)
+    return model.eval()
+
