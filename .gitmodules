@@ -13,3 +13,6 @@
 [submodule "dl_exam/vla/clones/GraspVLA"]
 	path = dl_exam/vla/clones/GraspVLA
 	url = https://github.com/PKU-EPIC/GraspVLA.git
+[submodule "dl_exam/vlm/clones/BLIP"]
+	path = dl_exam/vlm/clones/BLIP
+	url = https://github.com/salesforce/BLIP
