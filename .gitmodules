@@ -17,6 +17,10 @@
 [submodule "dl_exam/vlm/clones/ViLT"]
 	path = dl_exam/vlm/clones/ViLT
 	url = https://github.com/dandelin/ViLT.git
+[submodule "dl_exam/vlm/clones/PointCLIP"]
+	path = dl_exam/vlm/clones/PointCLIP
+	url = https://github.com/dandelin/PointCLIP.git
+
 
 # For VLA
 [submodule "dl_exam/vla/clones/AutoVLA"]
