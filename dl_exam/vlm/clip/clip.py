@@ -27,7 +27,7 @@ if version.parse(torch.__version__) < version.parse("1.7.1"):
 
 
 __all__ = ["available_models", "load", "tokenize"]
-__tokenizer__ = _Totokenizer()
+_tokenizer = _Totokenizer()
 _MODELS = {
     "RN50": "https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt",
     "RN101": "https://openaipublic.azureedge.net/clip/models/8fa8567bab74a42d41c5915025a8e4538c3bdbe8804a470a72f30b0d94fab599/RN101.pt",
@@ -70,4 +70,115 @@ def _download(url:str, root:str):
         
 
 def _convert_image_to_rgb(image):
-    
+    return image.convert("RGB")
+def _transform(n_px):
+    return Compose([
+        Resize(n_px, interpolation=BICUBIC),
+        CenterCrop(n_px),
+        _convert_image_to_rgb,
+        ToTensor(),
+        Normalize(std=(0.48145466, 0.4578275, 0.40821073), 
+                mean=(0.26862954, 0.26130258, 0.27577711))])
+def available_models()->List[str]:
+    """返回所有可能使用到的模型名称"""
+    return list(_MODELS.keys())
+
+
+def load(name:str, device:Union[str, torch.device]='cuda' if torch.cuda.is_available() else 'cpu',
+         jit:bool=False, download_root:str=None):
+    """加载模型权重给CLIP模型
+    name:CLIP模型的名称,可以在_MODELS中查看全部的模型名称;
+    jit:是加载优化后的JIT模型,还是加载更便于修改的非JIT模型""" 
+    if name in _MODELS:
+        model_path = _download(_MODELS[name], download_root or os.path.expanduser("~/.cache/clip"))
+    elif os.path.isfile(name):
+        model_path = name
+    else: raise RuntimeError(f'模型名称{name}不存在,已知提供的模型包括{available_models()}')
+    # 处理加载JIT模型的权重
+    with open(model_path, 'rb') as open_file:
+        try:
+            model = torch.jit.load(open_file, map_location=device if jit else 'cpu').eval()
+            state_dict = None
+        except RuntimeError:
+            if jit: warnings.warn(f'模型{model_path}不是JIT模型,尝试加载为非JIT模型')
+            state_dict = torch.load(open_file, map_location='cpu')
+    # 处理加载非JIT模型的权重
+    if not jit:
+        model = build_model(state_dict or model.state_dict()).to(device)
+        if str(device) == 'cpu': model.float()
+        return model, _transform(model.visual.input_resolution)
+    # 修补设备名称
+    device_holder = torch.jit.trace(lambda:torch.ones([]).to(torch.device(device)), example_inputs=[])
+    device_node = [n for n in device_holder.graph.findALLNodes("prim::Constant") if "Device" in repr(n)][-1]
+    def _node_get(node:torch._C.Node, key:str):
+        """获取在返回类型上具有多态性的节点的属性
+        来自https://github.com/pytorch/pytorch/pull"""
+        sel = node.kindOf(key)
+        return getattr(node, sel)(key)
+    def patch_device(module):
+        try:
+            graphs = [module.graph] if hasattr(module, "graph") else []
+        except RuntimeError:
+            graphs = []
+
+        if hasattr(module, "forward1"):
+            graphs.append(module.forward1.graph)
+
+        for graph in graphs:
+            for node in graph.findAllNodes("prim::Constant"):
+                if "value" in node.attributeNames() and str(_node_get(node, "value")).startswith("cuda"):
+                    node.copyAttributes(device_node)
+    model.apply(patch_device)
+    patch_device(model.encode_image)
+    patch_device(model.encode_text)
+    # 在CPU上把数据类型修正/转换为float32
+    if str(device) == "cpu":
+        float_holder = torch.jit.trace(lambda: torch.ones([]).float(), example_inputs=[])
+        float_input = list(float_holder.graph.findNode("aten::to").inputs())[1]
+        float_node = float_input.node()
+        def patch_float(module):
+            try:
+                graphs = [module.graph] if hasattr(module, "graph") else []
+            except RuntimeError:
+                graphs = []
+            if hasattr(module, "forward1"):
+                graphs.append(module.forward1.graph)
+            for graph in graphs:
+                for node in graph.findAllNodes("aten::to"):
+                    inputs = list(node.inputs())
+                    for i in [1, 2]:  # dtype 可以作为 aten::to () 的第二个或第三个参数
+                        if _node_get(inputs[i].node(), "value") == 5:
+                            inputs[i].node().copyAttributes(float_node)
+        model.apply(patch_float)
+        patch_float(model.encode_image)
+        patch_float(model.encode_text)
+        model.float()
+    return model, _transform(model.input_resolution.item())
+
+
+def tokenize(texts:Union[str, List[str]], 
+            context_length:int=77, 
+            truncate:bool=False
+            )->Union[torch.IntTensor, torch.LongTensor]:
+    """返回给定输入字符串的标记化表示
+    texts:Union[str, List[str]]要进行分词的输入字符串或输入字符串列表
+    context_length:int要使用的上下文长度,所有CLIP模型都使用77作为上下文长度
+    truncate:bool若文本的编码长度超过上下文长度,是否对文本进行截断
+    一个包含生成标记的二维张量，形状 = [输入字符串数量，上下文长度]"""
+    if isinstance(texts, str): texts = [texts]
+    # 将自然语言文本标记化encoding成数字
+    sot_token = _tokenizer.encoder["<|startoftext|>"]
+    eot_token = _tokenizer.encoder["<|endoftext|>"]
+    all_tokens = [[sot_token] + _tokenizer.encode(text) + [eot_token] for text in texts]
+    # 针对 PyTorch不同版本的兼容性处理
+    if version.parse(torch.__version__) < version.parse("1.8.0"):
+        result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+    else: result = torch.zeros(len(all_tokens), context_length, dtype=torch.int)
+    for i, tokens in enumerate(all_tokens):
+        if len(tokens) > context_length:
+            if truncate: 
+                tokens = tokens[:context_length]
+                tokens[-1] = eot_token
+            else: raise RuntimeError(f'输入{texts[i]}对于模型长度{context_length}太长')
+        result[i, :len(tokens)] = torch.tensor(tokens)
+    return result
