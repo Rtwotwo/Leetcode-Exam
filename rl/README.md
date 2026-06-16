@@ -6,6 +6,8 @@ Furthermore, Action Space: the set of actions available for the agent to choose 
 
 Therefore, the objective of reinforcement learning can be summarized as training a Policy neural network $\pi$ that, for all states $s$, produces actions that maximize the Return. Alternatively, it can be stated as maximizing the expected Return across all Trajectories. The core formula is $E(x)_{x \sim p(x)} = \sum_{x} x \cdot p(x) \approx \frac{1}{n} \sum_{i=1}^{n} x_{x \sim p(x)}$, which expresses the expected value of $x$ under the probability distribution $p(x)$, and can be approximated by the empirical mean over $n$ samples.
 
+$\mathbb{E}_{x \sim p(x)}[x] = \sum_{x} x \cdot p(x) \approx\frac{1}{n} \sum_{i=1}^{n} x_i$
+
 ## Proximal Policy Optimization(PPO)
 
 The core of the Proximal Policy Optimization algorithm lies in alternating between sampling data through interaction with the environment and optimizing the surrogate objective using stochastic gradient ascent, enabling multiple epochs of batch updates. PPO optimizes a novel objective with clipped probability ratios, which forms a pessimistic lower bound on the performance estimate.
